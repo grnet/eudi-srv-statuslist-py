@@ -164,3 +164,9 @@ cython_debug/
 #lib
 token-status-list-py
 config_secrets.py
+
+#emacs
+*~
+
+.config.ip
+.config.hostname
