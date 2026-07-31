@@ -22,19 +22,19 @@ import os
 
 class ConfService:
 
-    service_url = "https://issuer.eudiw.dev/"
+    service_url = "https://demo.eudiw.grnet.gr:5603/"
     # Token status list size (Bytes)
     token_status_list_size = 10000
 
-    status_list_dir = "/var/opt/status_lists"
+    status_list_dir = os.getenv("STATUS_LISTS_DIR")
 
-    backup_dir = "/var/opt/status_list_backup"
+    backup_dir = os.getenv("STATUS_LIST_BACKUP_DIR")
 
     countries = {
         "FC":{
-            "privKey":"/etc/eudiw/pid-issuer/privKey/PID-DS-0001_UT.pem",
+            "privKey":os.getenv("FC_PRIVATE_KEY"),
             "privkey_passwd": None,
-            "cert":"/etc/eudiw/pid-issuer/cert/PID-DS-0001_UT_cert.der"
+            "cert":os.getenv("FC_CERTIFICATE")
         },
         "PT":{
             "privKey":"/etc/eudiw/pid-issuer/privKey/PID-DS-0001_PT.pem",
@@ -110,11 +110,7 @@ class ConfService:
         "urn:eu.europa.ec.eudi:tax:1"
         "urn:eu.europa.ec.eudi:tax:1:1",
         "key-attestation+jwt",
-
-        
-
-
-
+        "oauth-client-attestation+jwt",
     }
 
     # ------------------------------------------------------------------------------------------------
