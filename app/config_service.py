@@ -22,19 +22,21 @@ import os
 
 class ConfService:
 
-    service_url = "https://issuer.eudiw.dev/"
+    # Signed into every token as `sub`, so it has to match where the service is
+    # actually reachable. No port: behind the proxy the name arrives on 443.
+    service_url = os.getenv("SERVICE_URL", "https://issuer.eudiw.dev/")
     # Token status list size (Bytes)
     token_status_list_size = 10000
 
-    status_list_dir = "/var/opt/status_lists"
+    status_list_dir = os.getenv("STATUS_LISTS_DIR", "/var/opt/status_lists")
 
-    backup_dir = "/var/opt/status_list_backup"
+    backup_dir = os.getenv("STATUS_LIST_BACKUP_DIR", "/var/opt/status_list_backup")
 
     countries = {
         "FC":{
-            "privKey":"/etc/eudiw/pid-issuer/privKey/PID-DS-0001_UT.pem",
+            "privKey":os.getenv("FC_PRIVATE_KEY", "/etc/eudiw/pid-issuer/privKey/PID-DS-0001_UT.pem"),
             "privkey_passwd": None,
-            "cert":"/etc/eudiw/pid-issuer/cert/PID-DS-0001_UT_cert.der"
+            "cert":os.getenv("FC_CERTIFICATE", "/etc/eudiw/pid-issuer/cert/PID-DS-0001_UT_cert.der")
         },
         "PT":{
             "privKey":"/etc/eudiw/pid-issuer/privKey/PID-DS-0001_PT.pem",
@@ -110,11 +112,7 @@ class ConfService:
         "urn:eu.europa.ec.eudi:tax:1"
         "urn:eu.europa.ec.eudi:tax:1:1",
         "key-attestation+jwt",
-
-        
-
-
-
+        "oauth-client-attestation+jwt",
     }
 
     # ------------------------------------------------------------------------------------------------

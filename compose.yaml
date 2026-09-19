@@ -1,0 +1,47 @@
+# Local development. One service, no proxy, no TLS.
+#
+# The deploy stack is deploy/compose.yaml, which adds the nginx-proxy labels and
+# joins the shared edge network. This file stays plain so `docker compose up`
+# works on a laptop with nothing else running.
+#
+# Signing material is not in this repo on `main` and must not be. Point
+# FC_PRIVATE_KEY and FC_CERTIFICATE at local files via .env; see DOCKER.md.
+
+services:
+  statuslist:
+    build: .
+    image: eudi-srv-statuslist-py:local
+    ports:
+      - "127.0.0.1:5603:5603"
+    environment:
+      # Signed into every token as `sub`. Locally this has to match how you
+      # reach the service, or issued tokens point somewhere that does not exist.
+      SERVICE_URL: ${SERVICE_URL:-http://localhost:5603/}
+      API_key: ${API_KEY:-test}
+      STATUS_LISTS_DIR: /data/status_lists
+      STATUS_LIST_BACKUP_DIR: /data/status_list_backup
+      FC_PRIVATE_KEY: /keys/signing.key
+      FC_CERTIFICATE: /keys/signing.der
+    volumes:
+      - status-lists:/data/status_lists
+      - status-list-backup:/data/status_list_backup
+      # Read-only, and outside the build context, so the key is never a layer.
+      - ${FC_PRIVATE_KEY:?set in .env, path to the signing key}:/keys/signing.key:ro
+      - ${FC_CERTIFICATE:?set in .env, path to the signing certificate}:/keys/signing.der:ro
+    healthcheck:
+      # Needs no API key and no arguments, so it answers whether or not any list
+      # has been issued yet. Trailing slash matters: without it Flask replies 308
+      # and curl -f treats the redirect as a failure.
+      test: ["CMD", "curl", "-fsS", "http://localhost:5603/token_status_list/swagger/", "-o", "/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+volumes:
+  # Named, not bind mounts. These hold the only copy of every status list ever
+  # issued, and bind mounts resolve on the remote filesystem when the daemon is
+  # driven over ssh, which is how the deploy workflow runs.
+  status-lists:
+  status-list-backup:
