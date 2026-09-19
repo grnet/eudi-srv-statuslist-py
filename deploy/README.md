@@ -34,9 +34,9 @@ not error: Docker creates an empty directory and the container starts with no
 key. The preflight checks both files are readable before deploying, and the
 verify step checks the mounted key is non-empty afterwards.
 
-**3. The data must be migrated.** See below. Deploying before this means the
-service starts with empty volumes and begins allocating indices from zero,
-against lists that already exist elsewhere.
+**3. The old writer must be stopped.** The bare flask process on the box holds
+the same signing key. Two services allocating against the same logical lists
+diverge in a way that cannot be merged, so only one writer, ever.
 
 ## Repository secrets
 
@@ -54,49 +54,21 @@ The two API key secrets live in different repositories and there is nothing that
 keeps them in sync. Changing one without the other means the wallet provider
 gets a 401 on every attestation it tries to issue.
 
-## Migrating from the VM
+## Replacing the VM service
 
-The running service holds roughly 292K in `status_lists/` and 1.5M in
-`status_list_backup/`, 48 files, plus a signing key. None of it is in git on
-`main`. Containerising without moving it first destroys it.
+The container starts with empty volumes and allocates from zero. The existing
+lists on the box are deliberately not migrated.
 
-Order matters.
+Every token referencing them carries `:5603` inside its signature, so moving to
+443 makes them unresolvable whether or not the data comes along. Migrating would
+preserve lists that nothing can dereference, at the cost of a maintenance window
+and an unrecoverable failure mode. New lists get fresh UUIDs, so nothing
+collides, and the old directories stay on the box as a fallback.
 
-    # 1. Stop the flask process. It writes on every allocation, so copying from
-    #    under a live service risks a torn read. It runs in a pts session, so
-    #    find it rather than assuming a service unit.
-    ssh target
-    pgrep -af 'flask --app app'
-    kill <pid>
+What does move is the signing key, because its certificate runs to Jan 2028 and
+is what relying parties expect. That is step 2 above.
 
-    # 2. Take a copy off the box first, before touching anything.
-    scp -r target:~/eudi-srv-statuslist-py/status_lists ./backup-status_lists
-    scp -r target:~/eudi-srv-statuslist-py/status_list_backup ./backup-status_list_backup
-    scp target:~/eudi-srv-statuslist-py/demo.eudiw.grnet.gr_5603.key ./
-    scp target:~/eudi-srv-statuslist-py/demo.eudiw.grnet.gr_5603.crt.der ./
-
-    # 3. Put the signing material where the stack expects it.
-    ssh target mkdir -p /home/ubuntu/statuslist-keys
-    scp demo.eudiw.grnet.gr_5603.key target:/home/ubuntu/statuslist-keys/signing.key
-    scp demo.eudiw.grnet.gr_5603.crt.der target:/home/ubuntu/statuslist-keys/signing.der
-    ssh target chmod 600 /home/ubuntu/statuslist-keys/signing.key
-
-    # 4. Create the volumes and load the data. Run the deploy once first so the
-    #    volumes exist, then stop the container before writing into them.
-    ssh target
-    docker stop eudiw-statuslist
-    docker run --rm -v eudiw-statuslist_status-lists:/dest \
-      -v ~/eudi-srv-statuslist-py/status_lists:/src:ro \
-      alpine sh -c 'cp -a /src/. /dest/'
-    docker run --rm -v eudiw-statuslist_status-list-backup:/dest \
-      -v ~/eudi-srv-statuslist-py/status_list_backup:/src:ro \
-      alpine sh -c 'cp -a /src/. /dest/'
-    docker start eudiw-statuslist
-
-    # 5. Confirm an existing list reads back before removing anything.
-
-Keep the copies off the box until the container has been running long enough to
-trust.
+The full sequence is in `CUTOVER.md` in the repository root.
 
 ## The port change
 

@@ -96,32 +96,59 @@ signing material on the box is named for it. The wallet provider sits under
 longer location match, so the prefix keeps winning and the status list catches
 everything else.
 
-`VIRTUAL_DEST=/` passes paths through unchanged rather than stripping a prefix,
-because the app namespaces itself already. `app/status_list_endpoints.py`
-registers its blueprint with `url_prefix="/token_status_list"`.
+### Owning the root does not mean serving at the root
+
+Worth separating, because the two look like the same thing and are not.
+
+`VIRTUAL_PATH=/` is a **proxy routing rule**. It decides which requests on
+`demo.eudiw.grnet.gr` belong to this container: everything not claimed by a
+longer match, which in practice means everything except `/wallet-provider/`.
+
+`/token_status_list/` is the **app's own route prefix**, inside the container.
+`app/status_list_endpoints.py:31` registers the blueprint with
+`url_prefix="/token_status_list"`. That is upstream code, not something the
+deployment chose.
+
+So the endpoints do not move to the root. They are at
+`/token_status_list/take`, `/token_status_list/get` and so on, exactly as they
+are on the VM today. Only the port changes:
+
+    before   https://demo.eudiw.grnet.gr:5603/token_status_list/take
+    after    https://demo.eudiw.grnet.gr/token_status_list/take
+
+`VIRTUAL_DEST=/` is what keeps the two layers from colliding. It passes the path
+through unchanged rather than stripping a prefix:
+
+    request    https://demo.eudiw.grnet.gr/token_status_list/take
+    proxy      matches VIRTUAL_PATH=/, passes through as-is
+    container  /token_status_list/take, blueprint matches
+
+The wallet provider uses the same `VIRTUAL_DEST=/` to the opposite effect: there
+it *strips* `/wallet-provider/`, because that app has no internal prefix of its
+own. Same directive, opposite result, depending on whether the application
+namespaces itself.
 
 No TLS in the container. `run-statuslist-server.sh` passes `--cert` and `--key`
 read from `/etc/letsencrypt`, which the VM needs and the container does not:
 nginx-proxy terminates TLS and reaches the service over plain HTTP on the
 internal network.
 
-### Migrating the existing data
+### Replacing the service on the VM
 
-The running service on the EC2 box holds roughly 292K in `status_lists/` and
-1.1M in `status_list_backup/`, 48 files, none of it in git. The signing key is
-not in git either on `main`. Containerising without moving all of it first
-destroys it.
+The container starts with empty volumes and allocates from zero. The lists on the
+box, 104 allocations across 8 lists, are deliberately left behind.
 
-1. Stop the flask process. It writes on every allocation, so copying from under
-   a live service risks a torn read.
-2. Copy both directories into the named volumes.
-3. Copy the signing key and certificate to wherever the deploy stack mounts them
-   from. Losing them means every token issued afterwards is signed by a
-   different key, and every token issued before it stops verifying.
-4. Start the container and confirm the existing lists are readable before
-   removing the old process.
-5. Keep a copy off the box until the container has been running long enough to
-   trust.
+Every token referencing them carries `:5603` inside its signature, so moving to
+443 makes them unresolvable whether or not the data comes along. Migrating would
+preserve lists nothing can dereference. New lists get fresh UUIDs, so nothing
+collides, and the old directories stay on the box as a fallback.
+
+The signing key does move, because its certificate runs to Jan 2028 and is what
+relying parties expect. The deploy stack mounts it at `/keys` and expects
+`signing.key` and `signing.der`.
+
+Stop the flask process before deploying. Two services allocating against the same
+logical lists diverge in a way that cannot be merged.
 
 ### The port change
 
