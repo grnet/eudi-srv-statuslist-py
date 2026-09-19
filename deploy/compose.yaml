@@ -1,0 +1,80 @@
+# Production stack for the EC2 box.
+#
+# Deployed by .github/workflows/docker-deploy.yml, which points a local compose
+# client at the remote daemon over SSH. The file itself never lands on the
+# server. To run it by hand:
+#
+#   DOCKER_HOST=ssh://target docker compose \
+#     -f deploy/compose.yaml --env-file deploy/stack.env -p eudiw-statuslist up -d
+#
+# The edge (nginx-proxy, acme-companion, proxy-net) belongs to
+# eudi-srv-wallet-provider and is not defined here. That stack has to be up
+# first; this one declares proxy-net as external and adds a single container.
+
+name: eudiw-statuslist
+
+services:
+  statuslist:
+    image: ${STATUSLIST_IMAGE:?set by the deploy workflow}
+    container_name: eudiw-statuslist
+    restart: unless-stopped
+    expose:
+      - "5603"
+    environment:
+      VIRTUAL_HOST: ${STATUSLIST_HOST:?set in stack.env}
+      VIRTUAL_PORT: "5603"
+      # Root of the hostname. The wallet provider sits at /wallet-provider/ on
+      # the same name and is unaffected: nginx prefers the longer location
+      # match, so its prefix keeps winning and this catches everything else.
+      VIRTUAL_PATH: /
+      # Passes paths through unchanged rather than stripping a prefix. The app
+      # namespaces itself: status_list_endpoints.py registers its blueprint with
+      # url_prefix="/token_status_list".
+      VIRTUAL_DEST: /
+      LETSENCRYPT_HOST: ${STATUSLIST_HOST}
+      LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL:?set in stack.env}
+
+      # Signed into every token as `sub`, so it cannot be rewritten later and
+      # does not migrate anything already issued. No port: behind the proxy the
+      # name arrives on 443.
+      SERVICE_URL: ${SERVICE_URL:?set in stack.env}
+
+      API_key: ${STATUSLIST_API_KEY:?repository secret, see deploy/README.md}
+
+      STATUS_LISTS_DIR: /data/status_lists
+      STATUS_LIST_BACKUP_DIR: /data/status_list_backup
+      FC_PRIVATE_KEY: /keys/signing.key
+      FC_CERTIFICATE: /keys/signing.der
+    volumes:
+      - status-lists:/data/status_lists
+      - status-list-backup:/data/status_list_backup
+      # The signing key is placed on the box once, out of band, and never passes
+      # through a CI runner. Read-only. See deploy/README.md.
+      - ${SIGNING_KEY_DIR:?set in stack.env}:/keys:ro
+    healthcheck:
+      # Needs no API key and no arguments, so it answers whether or not any list
+      # has been issued. Trailing slash matters: without it Flask replies 308 and
+      # curl -f treats the redirect as a failure.
+      test: ["CMD", "curl", "-fsS", "http://localhost:5603/token_status_list/swagger/", "-o", "/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - proxy-net
+
+volumes:
+  # Named, not bind mounts. Compose sends paths to the daemon verbatim, so over
+  # DOCKER_HOST=ssh:// a relative bind mount resolves on the remote filesystem
+  # and Docker silently creates an empty directory there.
+  #
+  # These hold every status list ever issued. Migrated from the VM before this
+  # stack takes over; see deploy/README.md.
+  status-lists:
+  status-list-backup:
+
+networks:
+  # Created by eudi-srv-wallet-provider's deploy stack.
+  proxy-net:
+    external: true
+    name: proxy-net
