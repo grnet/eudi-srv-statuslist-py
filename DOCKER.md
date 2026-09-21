@@ -128,6 +128,28 @@ it *strips* `/wallet-provider/`, because that app has no internal prefix of its
 own. Same directive, opposite result, depending on whether the application
 namespaces itself.
 
+So `https://demo.eudiw.grnet.gr/` returns 404, and that is correct. The app has
+no route at the bare root. Deployed and checked 2026-09-20:
+
+| Path | |
+| --- | --- |
+| `/` | 404, from Flask |
+| `/token_status_list/swagger/` | 200 |
+| `/token_status_list/take` | allocates an index |
+| `/token_status_list/get` | reads one back |
+| `/wallet-provider/jwks` | 200, the sibling service |
+
+Worth knowing which 404 you are looking at, because the two mean opposite things.
+Before this service was deployed, `/` returned **nginx's** 404: no upstream
+existed for that location. Now it returns **Flask's**, which proves the request
+reached the container. Two tells in the response: `access-control-allow-origin: *`
+comes from the app's CORS setup, and nginx's own page ends with an `nginx/1.31.3`
+footer that Flask's does not have.
+
+Left as a 404 deliberately. Giving the root a redirect to the swagger page would
+mean either patching upstream or adding proxy configuration that exists only to
+be friendly, and a bare 404 at the root of an API host is unremarkable.
+
 No TLS in the container. `run-statuslist-server.sh` passes `--cert` and `--key`
 read from `/etc/letsencrypt`, which the VM needs and the container does not:
 nginx-proxy terminates TLS and reaches the service over plain HTTP on the
