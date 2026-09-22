@@ -102,6 +102,13 @@ the change that could shadow a sibling.
 `VIRTUAL_DEST=/` passes paths through unchanged rather than stripping a prefix,
 because the app namespaces itself with `url_prefix="/token_status_list"`.
 
+Owning the root does not mean serving at it. `https://demo.eudiw.grnet.gr/`
+returns 404 because the app has no route there, which is expected rather than a
+routing fault. Check the response to tell which 404 it is: Flask's carries
+`access-control-allow-origin: *` and proves the request reached the container,
+while nginx's own error page ends with an `nginx/x.y.z` footer and means no
+upstream matched.
+
 ## No TLS in the container
 
 `run-statuslist-server.sh` passes `--cert` and `--key` read from
