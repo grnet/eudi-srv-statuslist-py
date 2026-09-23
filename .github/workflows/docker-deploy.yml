@@ -22,6 +22,13 @@ on:
         description: 'Image tag to deploy (default: sha- tag of this commit)'
         required: false
         type: string
+      # up -d is a no-op when nothing in the service definition changed, so a
+      # redeploy of the same tag does not restart anything.
+      force_recreate:
+        description: 'Recreate containers even if nothing changed'
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   # One deploy at a time. Two compose clients against the same daemon would race.
@@ -141,8 +148,11 @@ jobs:
 
           export COMPOSE_ENV_FILES=deploy/stack.env
 
+          recreate=""
+          [[ "${{ inputs.force_recreate }}" == "true" ]] && recreate="--force-recreate"
+
           $COMPOSE pull
-          $COMPOSE up -d --remove-orphans
+          $COMPOSE up -d --remove-orphans $recreate
 
       # A green `up -d` only means compose accepted the configuration. It does
       # not mean the container is still running a moment later, so check.
