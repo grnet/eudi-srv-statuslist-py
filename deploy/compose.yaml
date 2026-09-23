@@ -1,15 +1,8 @@
-# Production stack for the EC2 box.
+# The token status list. See deploy/README.md.
 #
-# Deployed by .github/workflows/docker-deploy.yml, which points a local compose
-# client at the remote daemon over SSH. The file itself never lands on the
-# server. To run it by hand:
+# Use deploy.sh or the Deploy workflow, not compose directly.
 #
-#   DOCKER_HOST=ssh://target docker compose \
-#     -f deploy/compose.yaml --env-file deploy/stack.env -p eudiw-statuslist up -d
-#
-# The edge (nginx-proxy, acme-companion, proxy-net) belongs to
-# eudi-srv-wallet-provider and is not defined here. That stack has to be up
-# first; this one declares proxy-net as external and adds a single container.
+# proxy-net belongs to eudi-srv-wallet-provider and must be up first.
 
 name: eudiw-statuslist
 
@@ -64,12 +57,8 @@ services:
       - proxy-net
 
 volumes:
-  # Named, not bind mounts. Compose sends paths to the daemon verbatim, so over
-  # DOCKER_HOST=ssh:// a relative bind mount resolves on the remote filesystem
-  # and Docker silently creates an empty directory there.
-  #
-  # These hold every status list ever issued. Migrated from the VM before this
-  # stack takes over; see deploy/README.md.
+  # Every status list ever issued. Named, not a bind mount: a relative bind
+  # mount resolves on the remote filesystem under DOCKER_HOST=ssh://.
   status-lists:
   status-list-backup:
 
