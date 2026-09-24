@@ -161,23 +161,26 @@ jobs:
           set -uo pipefail
           fail=0
 
-          echo "── container ──"
-          state=""
-          for _ in $(seq 1 12); do
-            state=$(docker inspect -f '{{.State.Status}}' eudiw-statuslist 2>/dev/null || echo absent)
-            [[ "$state" == "running" ]] && break
-            sleep 5
+          echo "── containers ──"
+          for c in eudiw-statuslist eudiw-statuslist-web; do
+            state=""
+            for _ in $(seq 1 12); do
+              state=$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo absent)
+              [[ "$state" == "running" ]] && break
+              sleep 5
+            done
+            if [[ "$state" == "running" ]]; then
+              echo "  ok   $c"
+            else
+              echo "  FAIL $c ($state)"
+              docker logs --tail 20 "$c" 2>&1 | sed 's/^/       /' || true
+              fail=1
+            fi
           done
-          if [[ "$state" == "running" ]]; then
-            echo "  ok   eudiw-statuslist"
-          else
-            echo "  FAIL eudiw-statuslist ($state)"
-            docker logs --tail 20 eudiw-statuslist 2>&1 | sed 's/^/       /' || true
-            fail=1
-          fi
 
-          echo "── attached to proxy-net ──"
-          if docker inspect -f '{{json .NetworkSettings.Networks}}' eudiw-statuslist 2>/dev/null | grep -q '"proxy-net"'; then
+          # web is what the proxy routes to; the app sits behind it.
+          echo "── web attached to proxy-net ──"
+          if docker inspect -f '{{json .NetworkSettings.Networks}}' eudiw-statuslist-web 2>/dev/null | grep -q '"proxy-net"'; then
             echo "  ok"
           else
             echo "  FAIL the proxy cannot reach the service"
@@ -200,32 +203,38 @@ jobs:
             fail=1
           fi
 
-          # Through the proxy, by Host header, so this exercises the vhost rather
-          # than the container directly. Trailing slash: without it Flask answers
-          # 308 and this reads as a failure.
-          echo "── service answers through the proxy ──"
+          # Through the proxy over https, with the real name and certificate:
+          # --connect-to sends the request to nginx-proxy on proxy-net while SNI
+          # and Host say the public name. Over plain http every path is a 301,
+          # which proves nothing about routing.
           host=$(grep -E '^STATUSLIST_HOST=' deploy/stack.env | cut -d= -f2)
-          code=$(docker run --rm --network proxy-net curlimages/curl:8.11.1 \
-                   -s -o /dev/null -w '%{http_code}' --max-time 10 \
-                   -H "Host: $host" http://nginx-proxy/token_status_list/swagger/ || echo 000)
-          if [[ "$code" == "200" ]]; then
-            echo "  ok   /token_status_list/swagger/ returned 200"
-          else
-            echo "  FAIL /token_status_list/swagger/ returned $code"
-            fail=1
-          fi
+          get() {
+            docker run --rm --network proxy-net curlimages/curl:8.11.1 \
+              -s --max-time 10 --connect-to "$host:443:nginx-proxy:443" "${@:2}" "https://$host$1" || echo 000
+          }
+          check() {
+            code=$(get "$1" -o /dev/null -w '%{http_code}')
+            if [[ "$code" == "$2" ]]; then echo "  ok   $1 returned $code"; else echo "  FAIL $1 returned $code, expected $2"; fail=1; fi
+          }
 
-          # The wallet provider shares this hostname under /wallet-provider/.
-          # Taking the root must not have shadowed it.
-          echo "── wallet provider still routed ──"
-          wp=$(docker run --rm --network proxy-net curlimages/curl:8.11.1 \
-                 -s -o /dev/null -w '%{http_code}' --max-time 10 \
-                 -H "Host: $host" http://nginx-proxy/wallet-provider/jwks || echo 000)
-          if [[ "$wp" == "200" ]]; then
-            echo "  ok   /wallet-provider/jwks returned 200"
+          echo "── service answers through the proxy ──"
+          # Trailing slash: without it Flask answers 308.
+          check /token_status_list/swagger/ 200
+          # Moving off the hostname root must not have shadowed its neighbours.
+          check /wallet-provider/jwks 200
+
+          # A list this service published must resolve at the URI it signed into
+          # credentials: a 404 until the web container existed.
+          echo "── a published list resolves ──"
+          list=$(docker exec eudiw-statuslist sh -c \
+                   'find /data/status_lists/token_status_list -name token_status_list.jwt | head -1' 2>/dev/null)
+          if [[ -n "$list" ]]; then
+            uri=${list#/data/status_lists}; uri=${uri%/token_status_list.jwt}
+            got=$(get "$uri" -o /dev/null -w '%{http_code} %{content_type}' -H 'Accept: application/statuslist+jwt')
+            if [[ "$got" == "200 application/statuslist+jwt" ]]; then echo "  ok   $uri"; else echo "  FAIL $uri returned $got"; fail=1; fi
+            check "$uri/full_list.json" 404
           else
-            echo "  FAIL /wallet-provider/jwks returned $wp"
-            fail=1
+            echo "  --   no list issued yet"
           fi
 
           [[ "$fail" -eq 0 ]] && echo "deploy verified" || { echo "verification failed"; exit 1; }

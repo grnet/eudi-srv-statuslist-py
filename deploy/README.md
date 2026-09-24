@@ -85,26 +85,56 @@ Both sides are portless as of 2026-09-19: `SERVICE_URL` here and
 
 ## Routing
 
-This service takes the root of the hostname:
+Two prefixes, which are everything the service serves or publishes:
 
-    VIRTUAL_HOST=demo.eudiw.grnet.gr
-    VIRTUAL_PATH=/
-    VIRTUAL_DEST=/
+    /token_status_list    the API (take, get, set, swagger) and published status lists
+    /identifier_list      published identifier lists
 
-The wallet provider sits at `/wallet-provider/` on the same name. nginx prefers
-the longer location match, so its prefix keeps winning and this catches
-everything else. The verify step checks both, because taking the root is exactly
-the change that could shadow a sibling.
+Neither is stripped: the app namespaces itself with
+`url_prefix="/token_status_list"`, and the URIs it signs into credentials carry
+both prefixes as they are.
 
-`VIRTUAL_DEST=/` passes paths through unchanged rather than stripping a prefix,
-because the app namespaces itself with `url_prefix="/token_status_list"`.
+It held the hostname root until 2026-09-24. The root is now the landing page in
+`eudi-srv-wallet-provider`.
 
-Owning the root does not mean serving at it. `https://demo.eudiw.grnet.gr/`
-returns 404 because the app has no route there, which is expected rather than a
-routing fault. Check the response to tell which 404 it is: Flask's carries
-`access-control-allow-origin: *` and proves the request reached the container,
-while nginx's own error page ends with an `nginx/x.y.z` footer and means no
-upstream matched.
+## The web container, and why the lists need it
+
+**Every list URI this service published was a 404 until 2026-09-24.** The app
+writes each list it issues to disk as signed files and signs the URL into
+credentials:
+
+    https://<host>/token_status_list/<country>/<doctype>/<uuid>
+    https://<host>/identifier_list/<country>/<doctype>/<uuid>
+
+but it has no route that serves them. Upstream expects a web server in front.
+Nothing noticed, because every check probed the API, never a published list.
+
+`eudiw-statuslist-web` is that web server, stock nginx, and the only container
+here the proxy routes to. The app is behind it on a private network.
+
+| Request | Served |
+| --- | --- |
+| a list URI, `Accept: application/statuslist+jwt`, or no `Accept` | `token_status_list.jwt`, `Content-Type: application/statuslist+jwt` |
+| a list URI, `Accept: …+cwt` | the `.cwt`, with the matching `+cwt` type |
+| the same under `/identifier_list/` | `identifier_list.jwt` or `.cwt`, `application/identifierlist+…` |
+| anything else under `/token_status_list` | passed to the app, path unchanged |
+
+The media types are the ones the tokens declare themselves, in `typ` and the CWT
+content type. Responses carry `Vary: Accept`.
+
+**`full_list.json` is never served.** It sits beside each list and is the app's
+unsigned working state. The web container maps only the negotiated signed file
+to disk; any other path falls through to the app, which has no route for it.
+
+It mounts the lists volume read-only; the app is the only writer.
+
+A quirk worth knowing if you edit it. The `Accept` format is resolved with
+`set $fmt $list_fmt` *before* the rewrite. The map behind `$list_fmt` is a regex,
+and when it matches it clobbers the rewrite's `$1..$3`, so evaluating it inside
+the rewrite produced an empty path and a 404, for CWT only. Found by testing.
+
+`deploy.sh` and the workflow both fetch a list the service actually published,
+by the URI it signed, and check that `full_list.json` beside it is a 404.
 
 ## No TLS in the container
 
