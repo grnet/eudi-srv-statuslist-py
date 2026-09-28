@@ -9,6 +9,33 @@ server: compose reads the file and the environment on the runner and sends the
 daemon an already-expanded spec. The only things that exist on the box are
 containers, named volumes, the signing key directory, and the Docker socket.
 
+## Running locally
+
+`compose.yaml` in the repository root is the local stack: one service, no proxy,
+no TLS. Signing material is not in this repository and must not be committed.
+Point at local files through `.env`:
+
+    FC_PRIVATE_KEY=/absolute/path/to/signing.key
+    FC_CERTIFICATE=/absolute/path/to/signing.der
+    API_KEY=test
+    SERVICE_URL=http://localhost:5603/
+
+Then:
+
+    docker compose up --build
+
+The service answers on `http://localhost:5603`, bound to loopback only.
+
+To generate a throwaway key for local work, which is what the CI smoke test
+does:
+
+    openssl ecparam -genkey -name prime256v1 -noout -out signing.key
+    openssl req -new -x509 -key signing.key -out signing.crt -days 365 -subj "/CN=local-ds"
+    openssl x509 -in signing.crt -outform der -out signing.der
+
+Tokens signed by that key verify against nothing. Fine for exercising the API,
+useless for anything a wallet will accept.
+
 ## Before the first deploy
 
 Three things, in this order.
@@ -68,8 +95,6 @@ collides, and the old directories stay on the box as a fallback.
 What does move is the signing key, because its certificate runs to Jan 2028 and
 is what relying parties expect. That is step 2 above.
 
-The full sequence is in `CUTOVER.md` in the repository root.
-
 ## The port change
 
 Tokens issued so far carry `:5603` inside the signature:
@@ -77,8 +102,8 @@ Tokens issued so far carry `:5603` inside the signature:
     "sub": "https://demo.eudiw.grnet.gr:5603/token_status_list/FC/..."
 
 Behind the proxy the name arrives on 443 and `:5603` is no longer published, so
-those stop resolving. They are development data expiring 2026-12-07 and the
-decision to accept the break is recorded in the top-level `DOCKER.md`.
+those stop resolving. They are development data expiring 2026-12-07, so we
+accepted the break rather than keep a second port open for them.
 
 Both sides are portless as of 2026-09-19: `SERVICE_URL` here and
 `TOKENSTATUSLISTSERVICE_SERVICEURL` in `eudi-srv-wallet-provider`.

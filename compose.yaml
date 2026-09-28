@@ -5,7 +5,8 @@
 # works on a laptop with nothing else running.
 #
 # Signing material is not in this repo on `main` and must not be. Point
-# FC_PRIVATE_KEY and FC_CERTIFICATE at local files via .env; see DOCKER.md.
+# FC_PRIVATE_KEY and FC_CERTIFICATE at local files via .env; see "Running
+# locally" in deploy/README.md.
 
 services:
   statuslist:
