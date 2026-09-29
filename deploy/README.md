@@ -158,8 +158,8 @@ A quirk worth knowing if you edit it. The `Accept` format is resolved with
 and when it matches it clobbers the rewrite's `$1..$3`, so evaluating it inside
 the rewrite produced an empty path and a 404, for CWT only. Found by testing.
 
-`deploy.sh` and the workflow both fetch a list the service actually published,
-by the URI it signed, and check that `full_list.json` beside it is a 404.
+The deploy workflow fetches a list the service actually published, by the URI
+it signed, and checks that `full_list.json` beside it is a 404.
 
 ## No TLS in the container
 
