@@ -78,10 +78,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Leaving image_tag empty deploys sha-<this commit>, which exists only once
-      # Docker build has finished for it. Fail here with the reason, rather than
-      # at the pull on the box with a bare "not found". Reads the registry
-      # directly, so it does not need the remote daemon.
+      # Fail early, with a reason, if the image is not in the registry yet.
       - name: Check the image is built
         env:
           IMAGE: ${{ steps.image.outputs.image }}
@@ -90,7 +87,7 @@ jobs:
           if err=$(docker buildx imagetools inspect "$IMAGE" 2>&1 >/dev/null); then
             echo "found $IMAGE"
           elif grep -q 'not found' <<<"$err"; then
-            echo "::error::$IMAGE is not in the registry. If this commit was just pushed, wait for its Docker build run to finish and deploy again; otherwise pass an image tag that exists."
+            echo "::error::$IMAGE is not in the registry. Wait for its Docker build to finish, or pass an image tag that exists."
             exit 1
           else
             echo "$err"
