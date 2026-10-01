@@ -1,0 +1,41 @@
+## Build context exclusions.
+##
+## The signing key matters most here. demo.eudiw.grnet.gr_5603.key and
+## snf-74864.ok-kno.grnetcloud.net.key are committed on the `demo` branch, and
+## anyone building from that branch would otherwise bake them into a layer of a
+## published image. Mounted at runtime instead.
+
+.git
+.gitignore
+.github
+
+**/__pycache__
+**/*.py[cod]
+*.egg-info
+.venv
+venv
+
+# Key material and certificates, mounted at runtime, never baked in.
+*.key
+*.pem
+*.der
+*.crt
+*.csr
+*.p12
+*.jwk.json
+*.jwk.pub.json
+
+# Runtime data. Lives in a volume; a copy in the image would shadow the mount
+# and look like data loss.
+status_lists/
+status_list_backup/
+
+# Host-specific / local noise
+install.sh
+run-statuslist-server.sh
+.config.ip
+.config.hostname
+*.md
+.env
+.DS_Store
+*~

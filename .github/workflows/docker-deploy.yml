@@ -1,0 +1,244 @@
+# Deploy to the EC2 box.
+#
+# Manually triggered, never on push, so merging a branch cannot change what is
+# running. Pick the image tag to deploy; it defaults to the SHA tag of the commit
+# the workflow runs on, which names exactly one build.
+#
+# The deploy drives the remote Docker daemon over SSH rather than copying files
+# to the server: DOCKER_HOST=ssh://target means the runner's compose client
+# controls the server's daemon. The compose file and the environment are read on
+# the runner and never land on the box.
+#
+# The edge (nginx-proxy, acme-companion, proxy-net) belongs to
+# eudi-srv-wallet-provider. That stack has to be deployed first; this workflow
+# checks for it rather than creating it.
+
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to deploy (default: sha- tag of this commit)'
+        required: false
+        type: string
+      # up -d is a no-op when nothing in the service definition changed, so a
+      # redeploy of the same tag does not restart anything.
+      force_recreate:
+        description: 'Recreate containers even if nothing changed'
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  # One deploy at a time. Two compose clients against the same daemon would race.
+  group: deploy
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    permissions:
+      contents: read
+      packages: read
+
+    env:
+      DOCKER_HOST: ssh://target
+      COMPOSE: docker compose -f deploy/compose.yaml -p eudiw-statuslist
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7.0.1
+
+      - name: Resolve the image tag
+        id: image
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.image_tag }}"
+          if [[ -z "$tag" ]]; then
+            tag="sha-${{ github.sha }}"
+          fi
+          image="${REGISTRY}/${IMAGE_NAME}:${tag}"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "Deploying $image"
+
+      # Authenticated on the runner. The credentials are forwarded to the remote
+      # daemon for the pull, so the box needs no registry login of its own.
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # config and known_hosts are committed under deploy/ssh/: hostnames, ports
+      # and host keys are public data, and keeping them in git makes a change to
+      # them reviewable. Only the private key is a secret.
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${SSH_KEY:-}" ]]; then
+            echo "::error::SSH_KEY is not set; see deploy/README.md"
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          install -m 600 deploy/ssh/config ~/.ssh/config
+          install -m 644 deploy/ssh/known_hosts ~/.ssh/known_hosts
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/eudiw-deploy
+          chmod 600 ~/.ssh/eudiw-deploy
+          ssh -o BatchMode=yes target 'echo "connected to $(hostname)"'
+
+      # Two things must already exist on the box, and neither failure is obvious
+      # after the fact.
+      #
+      # proxy-net is created by the wallet provider's stack. Without it compose
+      # fails outright, which is at least loud.
+      #
+      # The signing key is the quiet one. It is a bind mount, so if the directory
+      # is missing Docker creates an empty one and the container starts happily
+      # with no key. The failure only surfaces when something tries to issue.
+      - name: Preflight
+        run: |
+          set -euo pipefail
+          fail=0
+
+          if docker network inspect proxy-net >/dev/null 2>&1; then
+            echo "ok   proxy-net exists"
+          else
+            echo "::error::proxy-net is missing. Deploy eudi-srv-wallet-provider first."
+            fail=1
+          fi
+
+          key_dir=$(grep -E '^SIGNING_KEY_DIR=' deploy/stack.env | cut -d= -f2)
+          for f in signing.key signing.der; do
+            if ssh -o BatchMode=yes target "test -r '$key_dir/$f'"; then
+              echo "ok   $key_dir/$f"
+            else
+              echo "::error::$key_dir/$f is missing or unreadable on the box; see deploy/README.md"
+              fail=1
+            fi
+          done
+
+          exit "$fail"
+
+      # Compose interpolates ${...} client-side, here on the runner, and sends
+      # the daemon an already-expanded spec. So the values only have to exist in
+      # this step's environment; nothing is written to disk and nothing lands on
+      # the server.
+      - name: Pull and roll
+        env:
+          STATUSLIST_IMAGE: ${{ steps.image.outputs.image }}
+          STATUSLIST_API_KEY: ${{ secrets.STATUSLIST_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${STATUSLIST_API_KEY:-}" ]]; then
+            echo "::error::STATUSLIST_API_KEY is not set; see deploy/README.md"
+            exit 1
+          fi
+
+          export COMPOSE_ENV_FILES=deploy/stack.env
+
+          recreate=""
+          [[ "${{ inputs.force_recreate }}" == "true" ]] && recreate="--force-recreate"
+
+          $COMPOSE pull
+          $COMPOSE up -d --remove-orphans $recreate
+
+      # A green `up -d` only means compose accepted the configuration. It does
+      # not mean the container is still running a moment later, so check.
+      - name: Verify
+        run: |
+          set -uo pipefail
+          fail=0
+
+          echo "── containers ──"
+          for c in eudiw-statuslist eudiw-statuslist-web; do
+            state=""
+            for _ in $(seq 1 12); do
+              state=$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null || echo absent)
+              [[ "$state" == "running" ]] && break
+              sleep 5
+            done
+            if [[ "$state" == "running" ]]; then
+              echo "  ok   $c"
+            else
+              echo "  FAIL $c ($state)"
+              docker logs --tail 20 "$c" 2>&1 | sed 's/^/       /' || true
+              fail=1
+            fi
+          done
+
+          # web is what the proxy routes to; the app sits behind it.
+          echo "── web attached to proxy-net ──"
+          if docker inspect -f '{{json .NetworkSettings.Networks}}' eudiw-statuslist-web 2>/dev/null | grep -q '"proxy-net"'; then
+            echo "  ok"
+          else
+            echo "  FAIL the proxy cannot reach the service"
+            fail=1
+          fi
+
+          echo "── signing key is mounted and non-empty ──"
+          if docker exec eudiw-statuslist test -s /keys/signing.key 2>/dev/null; then
+            echo "  ok"
+          else
+            echo "  FAIL /keys/signing.key is missing or empty; the service cannot sign"
+            fail=1
+          fi
+
+          echo "── nginx config valid ──"
+          if docker exec nginx-proxy nginx -t >/dev/null 2>&1; then
+            echo "  ok"
+          else
+            docker exec nginx-proxy nginx -t 2>&1 | sed 's/^/       /'
+            fail=1
+          fi
+
+          # Through the proxy over https, with the real name and certificate:
+          # --connect-to sends the request to nginx-proxy on proxy-net while SNI
+          # and Host say the public name. Over plain http every path is a 301,
+          # which proves nothing about routing.
+          host=$(grep -E '^STATUSLIST_HOST=' deploy/stack.env | cut -d= -f2)
+          get() {
+            docker run --rm --network proxy-net curlimages/curl:8.11.1 \
+              -s --max-time 10 --connect-to "$host:443:nginx-proxy:443" "${@:2}" "https://$host$1" || echo 000
+          }
+          check() {
+            code=$(get "$1" -o /dev/null -w '%{http_code}')
+            if [[ "$code" == "$2" ]]; then echo "  ok   $1 returned $code"; else echo "  FAIL $1 returned $code, expected $2"; fail=1; fi
+          }
+
+          echo "── service answers through the proxy ──"
+          # Trailing slash: without it Flask answers 308.
+          check /token_status_list/swagger/ 200
+          # Moving off the hostname root must not have shadowed its neighbours.
+          check /wallet-provider/jwks 200
+
+          # A list this service published must resolve at the URI it signed into
+          # credentials: a 404 until the web container existed.
+          echo "── a published list resolves ──"
+          list=$(docker exec eudiw-statuslist sh -c \
+                   'find /data/status_lists/token_status_list -name token_status_list.jwt | head -1' 2>/dev/null)
+          if [[ -n "$list" ]]; then
+            uri=${list#/data/status_lists}; uri=${uri%/token_status_list.jwt}
+            got=$(get "$uri" -o /dev/null -w '%{http_code} %{content_type}' -H 'Accept: application/statuslist+jwt')
+            if [[ "$got" == "200 application/statuslist+jwt" ]]; then echo "  ok   $uri"; else echo "  FAIL $uri returned $got"; fail=1; fi
+            check "$uri/full_list.json" 404
+          else
+            echo "  --   no list issued yet"
+          fi
+
+          [[ "$fail" -eq 0 ]] && echo "deploy verified" || { echo "verification failed"; exit 1; }
+
+      - name: Clean up
+        if: always()
+        run: docker image prune -f || true
