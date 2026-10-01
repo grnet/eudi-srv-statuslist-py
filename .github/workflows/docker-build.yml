@@ -12,7 +12,7 @@ name: Docker build
 on:
   push:
     branches:
-      - main
+      - grnet
       - 'feat/**'
     paths-ignore:
       - '**.md'
