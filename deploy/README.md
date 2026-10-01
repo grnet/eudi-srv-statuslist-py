@@ -223,9 +223,10 @@ relying parties have to read status without holding a secret.
 ## What this does not do
 
 `flask run` is the development server, and it prints a warning saying so on every
-start. It is what the VM already uses, so the container is no worse, but it is a
-single-threaded development server holding the only copy of the revocation data.
-See `TODO.md`.
+start. It is what the VM already uses, so the container is no worse. It runs each
+request in its own thread, and those threads and the renewal thread change the
+same in-memory lists and rewrite the same files with no locking. That state is
+the only copy of the revocation data.
 
 The renewal thread in `app/lists_renewal.py` starts inside `create_app()` and
 rotates lists daily. It means the service cannot be scaled past one replica:
@@ -234,7 +235,7 @@ knowing before anyone reaches for `deploy.replicas`.
 
 `app.debug = True` is hardcoded in `app/__init__.py`. Flask's reloader is off
 because `flask run` is not invoked with `--debug`, but the interactive debugger
-and its traceback pages are reachable on an unhandled exception. See `TODO.md`.
+and its traceback pages are reachable on an unhandled exception.
 
 ## Still to sort
 

@@ -38,6 +38,6 @@ EXPOSE 5603
 # 0.0.0.0 rather than the host's private IP: inside a container the only address
 # that works is every address.
 #
-# flask run is the development server and says so on startup. Accepted for now,
-# see TODO.md; gunicorn is the change when this stops being a demo.
+# flask run is the development server and says so on startup. Accepted for now;
+# gunicorn is the change when this stops being a demo.
 CMD ["flask", "--app", "app", "run", "--host=0.0.0.0", "--port=5603"]
